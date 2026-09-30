@@ -79,7 +79,7 @@ function reportGroups(kind,year,month){let m={};journals.forEach(j=>{if(!periodM
 function renderIS(){let y=+$('iy').value||currentYear(),mo=$('im').value?+$('im').value:null,m=reportGroups('pl',y,mo),html='';Object.entries(m).sort().forEach(([t,v])=>{html+=`<tr class="grouprow"><td>${esc(t)}</td><td>LKR ${v.d.toFixed(2)}</td><td>LKR ${v.c.toFixed(2)}</td><td>LKR ${(v.c-v.d).toFixed(2)}</td></tr>`;Object.entries(v.accounts).sort().forEach(([a,x])=>html+=`<tr class="subrow"><td>↳ ${esc(a)}</td><td>LKR ${x.d.toFixed(2)}</td><td>LKR ${x.c.toFixed(2)}</td><td>LKR ${(x.c-x.d).toFixed(2)}</td></tr>`)});$('isBody').innerHTML=html||'<tr><td colspan="4">No income/expense entries for the selected period.</td></tr>'}
 function renderBS(){let m=reportGroups('bs',currentYear(),null),html='';Object.entries(m).sort().forEach(([t,v])=>{html+=`<tr class="grouprow"><td>${esc(t)}</td><td>LKR ${v.d.toFixed(2)}</td><td>LKR ${v.c.toFixed(2)}</td><td>LKR ${(v.d-v.c).toFixed(2)}</td></tr>`;Object.entries(v.accounts).sort().forEach(([a,x])=>html+=`<tr class="subrow"><td>↳ ${esc(a)}</td><td>LKR ${x.d.toFixed(2)}</td><td>LKR ${x.c.toFixed(2)}</td><td>LKR ${(x.d-x.c).toFixed(2)}</td></tr>`)});$('bsBody').innerHTML=html||'<tr><td colspan="4">No balance-sheet entries for mapped accounts.</td></tr>'}
 function balanceSheetValidation(){
-  let assets=0,investments=0,liabilities=0,equity=0,y=currentYear();
+  let assets=0,investments=0,liabilities=0,equity=0,income=0,expenses=0,y=currentYear();
   journals.forEach(j=>{
     if(!periodMatch(j.date,y,null))return;
     j.lines.forEach(l=>{
@@ -88,9 +88,11 @@ function balanceSheetValidation(){
       else if(n.includes('asset')) assets+=bal;
       else if(n.includes('liabil')) liabilities+=-bal;
       else if(n.includes('equity')) equity+=-bal;
+      else if(n.includes('income')) income+=-bal;
+      else if(n.includes('expense')) expenses+=bal;
     });
   });
-  return (assets+investments)-(liabilities+equity);
+  return (assets+investments)-(liabilities+equity+(income-expenses));
 }
 function renderBSValidation(){
   let diff=balanceSheetValidation(),display=Math.abs(diff)<0.005?0:diff;
