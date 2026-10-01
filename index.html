@@ -72,10 +72,16 @@ function renderJVReview(){
 }
 function clearJVReview(){$('jvReviewSearch').value='';renderJVReview()}
 function renderLedger(){let a=$('lacct').value,b=0,rows=[];journals.forEach(j=>j.lines.forEach(l=>{let x=lineForReport(j,l);if(x.account===a){b+=x.debitLKR-x.creditLKR;rows.push([j.date,j.jv,j.description,x.currency,x.amount,x.debitLKR,x.creditLKR,b])}}));$('ledgerBody').innerHTML=rows.map(r=>`<tr><td>${r[0]}</td><td>${r[1]}</td><td>${esc(r[2])}</td><td>${r[3]}</td><td>${r[4].toFixed(2)}</td><td class="lkr">LKR ${r[5].toFixed(2)}</td><td class="lkr">LKR ${r[6].toFixed(2)}</td><td class="lkr">LKR ${r[7].toFixed(2)}</td></tr>`).join('')}
-function groupByType(){let m={};journals.forEach(j=>j.lines.forEach(l=>{let x=lineForReport(j,l),a=accounts.find(a=>a.name===x.account)||{};let t=a.accountType||'UNMAPPED';m[t]??={d:0,c:0,accounts:{}};m[t].d+=x.debitLKR;m[t].c+=x.creditLKR;m[t].accounts[x.account]??={d:0,c:0};m[t].accounts[x.account].d+=x.debitLKR;m[t].accounts[x.account].c+=x.creditLKR}));return m}
+function groupByType(){let m={};journals.forEach(j=>j.lines.forEach(l=>{let x=lineForReport(j,l),a=accounts.find(a=>a.name===x.account)||{};let t=reportAccountType(a);m[t]??={d:0,c:0,accounts:{}};m[t].d+=x.debitLKR;m[t].c+=x.creditLKR;m[t].accounts[x.account]??={d:0,c:0};m[t].accounts[x.account].d+=x.debitLKR;m[t].accounts[x.account].c+=x.creditLKR}));return m}
 function renderTB(){let m=groupByType(),html='';Object.entries(m).sort().forEach(([t,v])=>{html+=`<tr class="grouprow"><td>${esc(t)}</td><td>LKR ${v.d.toFixed(2)}</td><td>LKR ${v.c.toFixed(2)}</td><td>LKR ${(v.d-v.c).toFixed(2)}</td></tr>`;Object.entries(v.accounts).sort().forEach(([a,x])=>html+=`<tr class="subrow"><td>↳ ${esc(a)}</td><td>LKR ${x.d.toFixed(2)}</td><td>LKR ${x.c.toFixed(2)}</td><td>LKR ${(x.d-x.c).toFixed(2)}</td></tr>`)});$('tbBody').innerHTML=html||'<tr><td colspan="4">No transactions.</td></tr>'}
-function nature(a){return ((a.nature||'')+' '+(a.accountType||'')).toLowerCase()}
-function reportGroups(kind,year,month){let m={};journals.forEach(j=>{if(!periodMatch(j.date,year,month))return;j.lines.forEach(l=>{let x=lineForReport(j,l),a=accounts.find(a=>a.name===x.account)||{},n=nature(a);let ok=kind==='pl'?(n.includes('income')||n.includes('expense')):(n.includes('asset')||n.includes('liabil')||n.includes('equity'));if(!ok)return;let t=a.accountType||'UNMAPPED';m[t]??={d:0,c:0,accounts:{}};m[t].d+=x.debitLKR;m[t].c+=x.creditLKR;m[t].accounts[x.account]??={d:0,c:0};m[t].accounts[x.account].d+=x.debitLKR;m[t].accounts[x.account].c+=x.creditLKR})});return m}
+function nature(a){return ((a.nature||'')+' '+(a.accountType||'')+' '+(a.subAccount||'')).toLowerCase()}
+function isInvestmentAccount(a){
+  return [a?.accountType,a?.subAccount,a?.nature].some(v=>String(v||'').toLowerCase().includes('investment'));
+}
+function reportAccountType(a){
+  return isInvestmentAccount(a)?'INVESTMENT':(a.accountType||'UNMAPPED');
+}
+function reportGroups(kind,year,month){let m={};journals.forEach(j=>{if(!periodMatch(j.date,year,month))return;j.lines.forEach(l=>{let x=lineForReport(j,l),a=accounts.find(a=>a.name===x.account)||{},n=nature(a);let investment=isInvestmentAccount(a);let ok=kind==='pl'?(n.includes('income')||n.includes('expense')):(investment||n.includes('asset')||n.includes('liabil')||n.includes('equity'));if(!ok)return;let t=reportAccountType(a);m[t]??={d:0,c:0,accounts:{}};m[t].d+=x.debitLKR;m[t].c+=x.creditLKR;m[t].accounts[x.account]??={d:0,c:0};m[t].accounts[x.account].d+=x.debitLKR;m[t].accounts[x.account].c+=x.creditLKR})});return m}
 function renderIS(){let y=+$('iy').value||currentYear(),mo=$('im').value?+$('im').value:null,m=reportGroups('pl',y,mo),html='';Object.entries(m).sort().forEach(([t,v])=>{html+=`<tr class="grouprow"><td>${esc(t)}</td><td>LKR ${v.d.toFixed(2)}</td><td>LKR ${v.c.toFixed(2)}</td><td>LKR ${(v.c-v.d).toFixed(2)}</td></tr>`;Object.entries(v.accounts).sort().forEach(([a,x])=>html+=`<tr class="subrow"><td>↳ ${esc(a)}</td><td>LKR ${x.d.toFixed(2)}</td><td>LKR ${x.c.toFixed(2)}</td><td>LKR ${(x.c-x.d).toFixed(2)}</td></tr>`)});$('isBody').innerHTML=html||'<tr><td colspan="4">No income/expense entries for the selected period.</td></tr>'}
 function renderBS(){let m=reportGroups('bs',currentYear(),null),html='';Object.entries(m).sort().forEach(([t,v])=>{html+=`<tr class="grouprow"><td>${esc(t)}</td><td>LKR ${v.d.toFixed(2)}</td><td>LKR ${v.c.toFixed(2)}</td><td>LKR ${(v.d-v.c).toFixed(2)}</td></tr>`;Object.entries(v.accounts).sort().forEach(([a,x])=>html+=`<tr class="subrow"><td>↳ ${esc(a)}</td><td>LKR ${x.d.toFixed(2)}</td><td>LKR ${x.c.toFixed(2)}</td><td>LKR ${(x.d-x.c).toFixed(2)}</td></tr>`)});$('bsBody').innerHTML=html||'<tr><td colspan="4">No balance-sheet entries for mapped accounts.</td></tr>'}
 function balanceSheetValidation(){
@@ -83,8 +89,8 @@ function balanceSheetValidation(){
   journals.forEach(j=>{
     if(!periodMatch(j.date,y,null))return;
     j.lines.forEach(l=>{
-      let x=lineForReport(j,l),a=accounts.find(a=>a.name===x.account)||{},n=nature(a),type=(a.accountType||'').trim().toLowerCase(),bal=x.debitLKR-x.creditLKR;
-      if(type==='investment'||type.includes('investment')) investments+=bal;
+      let x=lineForReport(j,l),a=accounts.find(a=>a.name===x.account)||{},n=nature(a),bal=x.debitLKR-x.creditLKR;
+      if(isInvestmentAccount(a)) investments+=bal;
       else if(n.includes('asset')) assets+=bal;
       else if(n.includes('liabil')) liabilities+=-bal;
       else if(n.includes('equity')) equity+=-bal;
@@ -139,7 +145,7 @@ function pieData(kind,year,month){
       else if(kind==='expense'&&n.includes('expense'))v=x.debitLKR-x.creditLKR;
       else if(kind==='typeExpense'&&n.includes('expense'))v=x.debitLKR-x.creditLKR;
       if(v>0){
-        let key=(kind==='typeExpense')?(a.accountType||'UNMAPPED'):x.account;
+        let key=(kind==='typeExpense')?reportAccountType(a):x.account;
         m[key]=(m[key]||0)+v;
       }
     });
@@ -151,10 +157,6 @@ function incomeExpenseChartData(year,month){
   if(t.inc>0)arr.push(['Income',t.inc]);
   if(t.exp>0)arr.push(['Expenses',t.exp]);
   return arr;
-}
-function isInvestmentAccount(a){
-  let name=(a.name||'').trim().toLowerCase(),type=(a.accountType||'').trim().toLowerCase();
-  return name==='layesh'||type==='investment'||type.includes('investment');
 }
 function incomeUseData(year,month){
   let inc=incomeExpenseTotals(year,month).inc,exp=incomeExpenseTotals(year,month).exp,investment=0;
@@ -184,8 +186,8 @@ function renderPie(elId,legendId,data,colorMap){
   $(elId).style.background=total?`conic-gradient(${parts.join(',')})`:'#e2e8f0';
   $(legendId).innerHTML=html||'<span>No data</span>';
 }
-function populateHistTypes(){let sel=$('histType'),current=sel.value;let types=[...new Set(accounts.map(a=>a.accountType).map(x=>(x||'').trim()).filter(Boolean))].sort((a,b)=>a.localeCompare(b));sel.innerHTML='<option value="">All Account Types</option>'+types.map(t=>`<option value="${esc(t)}">${esc(t)}</option>`).join('');if(types.includes(current))sel.value=current;else if(current==='')sel.value='';}
-function renderHistogram(year,month){let type=$('histType').value,m={};journals.forEach(j=>{if(!periodMatch(j.date,year,month))return;j.lines.forEach(l=>{let x=lineForReport(j,l),a=accounts.find(a=>a.name===x.account)||{},accountType=(a.accountType||'').trim();if(type&&accountType!==type)return;let n=nature(a),v=0;if(n.includes('income'))v=x.creditLKR-x.debitLKR;else if(n.includes('expense'))v=x.debitLKR-x.creditLKR;else v=Math.abs(x.debitLKR-x.creditLKR);if(v>0)m[x.account]=(m[x.account]||0)+v})});let arr=Object.entries(m).sort((a,b)=>b[1]-a[1]),max=Math.max(1,...arr.map(x=>x[1]));$('histBars').innerHTML=arr.map(([a,v])=>`<div class="barcol"><div class="barval">${v.toFixed(0)}</div><div class="bar" style="height:${Math.max(3,v/max*150)}px;background:#2563EB"></div><div>${esc(a)}</div></div>`).join('')||'<span class="muted">No data for this account type.</span>'}
+function populateHistTypes(){let sel=$('histType'),current=sel.value;let types=[...new Set(accounts.map(a=>reportAccountType(a)).map(x=>(x||'').trim()).filter(Boolean))].sort((a,b)=>a.localeCompare(b));sel.innerHTML='<option value="">All Account Types</option>'+types.map(t=>`<option value="${esc(t)}">${esc(t)}</option>`).join('');if(types.includes(current))sel.value=current;else if(current==='')sel.value='';}
+function renderHistogram(year,month){let type=$('histType').value,m={};journals.forEach(j=>{if(!periodMatch(j.date,year,month))return;j.lines.forEach(l=>{let x=lineForReport(j,l),a=accounts.find(a=>a.name===x.account)||{},accountType=reportAccountType(a).trim();if(type&&accountType!==type)return;let n=nature(a),v=0;if(n.includes('income'))v=x.creditLKR-x.debitLKR;else if(n.includes('expense'))v=x.debitLKR-x.creditLKR;else v=Math.abs(x.debitLKR-x.creditLKR);if(v>0)m[x.account]=(m[x.account]||0)+v})});let arr=Object.entries(m).sort((a,b)=>b[1]-a[1]),max=Math.max(1,...arr.map(x=>x[1]));$('histBars').innerHTML=arr.map(([a,v])=>`<div class="barcol"><div class="barval">${v.toFixed(0)}</div><div class="bar" style="height:${Math.max(3,v/max*150)}px;background:#2563EB"></div><div>${esc(a)}</div></div>`).join('')||'<span class="muted">No data for this account type.</span>'}
 function renderDashboardCharts(){
   let y=+$('dy').value||currentYear(),mo=$('dm').value?+$('dm').value:null,period=mo?`Month ${mo}/${y}`:`YTD ${y}`;
   $('dashPeriod').textContent=period;
