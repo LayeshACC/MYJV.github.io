@@ -31,7 +31,34 @@
 <div><label>Sub Code</label><select id="scSheetsCode" onchange="renderSubCodeSheets()"><option value="">All Sub Codes</option></select></div>
 </div>
 <p class="muted">Each sub code is shown as a separate tracking sheet with its transaction details and totals.</p><div id="subCodeSheets"></div></div></section>
-</main><nav><button class="active" onclick="show('home',this)">🏠 Home</button><button onclick="show('journal',this)">＋ JV</button><button onclick="show('history',this)">📋 History</button><button onclick="show('ledger',this)">📖 Ledger</button><button onclick="show('tb',this)">TB</button><button onclick="show('is',this)">P&L</button><button onclick="show('bs',this)">BS</button><button onclick="show('budget',this)">Budget</button><button onclick="show('coa',this)">COA</button><button onclick="show('currency',this)">FX</button><button onclick="show('subcodesheets',this)">Sub-Code Sheets</button></nav>
+
+<section id="backup" class="page">
+  <div class="card">
+    <h2>Google Drive Backup &amp; Restore</h2>
+    <p class="muted">Your accounting data continues to save on this device. When Google Drive is connected, the app also uploads an encrypted full backup after each saved accounting change.</p>
+    <div class="status" id="driveStatus">Local saving is active. Google Drive is not connected.</div>
+    <label>Google OAuth Web Client ID</label>
+    <input id="driveClientId" placeholder="Paste your Google OAuth Web Client ID">
+    <div class="hint">Create a Web application OAuth client in Google Cloud, enable the Google Drive API, and add the exact app origin to Authorized JavaScript origins. Do not enter a client secret here.</div>
+    <label>Backup encryption password</label>
+    <input id="backupPass" type="password" autocomplete="new-password" placeholder="Use a strong, unique password (12+ characters)">
+    <div class="hint">This password encrypts the backup before upload. It is not saved by the app. Keep it separately; without it, the backup cannot be decrypted.</div>
+    <div class="actions">
+      <button class="btn primary" onclick="connectGoogleDrive()">Connect Google Drive</button>
+      <button class="btn secondary" onclick="disconnectGoogleDrive()">Disconnect</button>
+      <button class="btn secondary" onclick="backupToDriveNow()">Backup Now</button>
+      <button class="btn secondary" onclick="restoreFromDrive()">Restore from Drive</button>
+    </div>
+    <div class="muted" id="driveLastBackup" style="margin-top:10px">Last successful Drive backup: Not yet backed up</div>
+  </div>
+  <div class="card">
+    <h3>Backup coverage</h3>
+    <p class="muted">The full backup includes Chart of Accounts, journal vouchers and all JV lines, currencies and exchange rates, budgets, and the app's backup metadata. Restore replaces the current local accounting dataset after confirmation.</p>
+    <p class="muted"><b>Automatic backup limitation:</b> Google access tokens expire. After the token expires or the app is reopened, reconnect to Google Drive to resume after-entry backups. This browser-only version cannot silently refresh Google access in the background. Keep a separate backup copy as an additional safeguard.</p>
+    <p class="muted">Use the app over HTTPS or localhost for Google sign-in. Opening the HTML directly as a file may not be accepted as an authorized Google OAuth origin.</p>
+  </div>
+</section>
+</main><nav><button class="active" onclick="show('home',this)">🏠 Home</button><button onclick="show('journal',this)">＋ JV</button><button onclick="show('history',this)">📋 History</button><button onclick="show('ledger',this)">📖 Ledger</button><button onclick="show('tb',this)">TB</button><button onclick="show('is',this)">P&L</button><button onclick="show('bs',this)">BS</button><button onclick="show('budget',this)">Budget</button><button onclick="show('coa',this)">COA</button><button onclick="show('currency',this)">FX</button><button onclick="show('subcodesheets',this)">Sub-Code Sheets</button><button onclick="show('backup',this)">☁ Backup</button></nav>
 <script>
 window.REQUESTED_CHART_PALETTE=["#4F81BD","#C0504D","#9BBB59","#8064A2","#4BACC6","#F79646","#2F75B5","#70AD47","#7030A0","#FFC000"];
 window.requestedChartColors=function(n){return Array.from({length:n},(_,i)=>window.REQUESTED_CHART_PALETTE[i%window.REQUESTED_CHART_PALETTE.length]);};
@@ -40,6 +67,201 @@ const BASE=[{"name": "Bank Holds IN", "accountType": "ACCRUED INCOME", "subAccou
 const $=id=>document.getElementById(id), esc=s=>String(s??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[m]));
 let authMode='login';
 async function digestPassword(password,salt){let data=new TextEncoder().encode(password),saltBytes=new TextEncoder().encode(salt);let key=await crypto.subtle.importKey('raw',data,{name:'PBKDF2'},false,['deriveBits']);let bits=await crypto.subtle.deriveBits({name:'PBKDF2',salt:saltBytes,iterations:120000,hash:'SHA-256'},key,256);return [...new Uint8Array(bits)].map(b=>b.toString(16).padStart(2,'0')).join('')}
+
+// Google Drive encrypted backup module. Access tokens and backup passwords stay in memory only.
+let driveToken = null, driveTokenExpiresAt = 0, driveTokenClient = null, driveConnectPurpose = 'normal';
+let driveBackupPassword = '', driveFileId = '', driveBackupBusy = false, driveBackupQueued = false;
+let driveScriptPromise = null;
+
+function driveStatus(message, good=false){
+  const el=$('driveStatus');
+  if(el){el.textContent=message;el.className='status '+(good?'ok':'bad');}
+}
+function loadGoogleIdentity(){
+  if(window.google?.accounts?.oauth2)return Promise.resolve();
+  if(driveScriptPromise)return driveScriptPromise;
+  driveScriptPromise=new Promise((resolve,reject)=>{
+    const s=document.createElement('script');
+    s.src='https://accounts.google.com/gsi/client';
+    s.onload=()=>window.google?.accounts?.oauth2?resolve():reject(new Error('Google sign-in library did not load.'));
+    s.onerror=()=>reject(new Error('Could not load Google sign-in. Check your internet connection.'));
+    document.head.appendChild(s);
+  });
+  return driveScriptPromise;
+}
+function backupPayload(){
+  return {
+    format:'MobileAccountingFullBackup',
+    schemaVersion:1,
+    exportedAt:new Date().toISOString(),
+    accounts,currencies,journals,budgets
+  };
+}
+async function deriveBackupKey(password,salt){
+  const material=await crypto.subtle.importKey('raw',new TextEncoder().encode(password),'PBKDF2',false,['deriveKey']);
+  return crypto.subtle.deriveKey(
+    {name:'PBKDF2',salt,iterations:310000,hash:'SHA-256'},
+    material,{name:'AES-GCM',length:256},false,['encrypt','decrypt']
+  );
+}
+function bytesToBase64(bytes){
+  let binary='';const chunk=0x8000;
+  for(let i=0;i<bytes.length;i+=chunk)binary+=String.fromCharCode(...bytes.subarray(i,i+chunk));
+  return btoa(binary);
+}
+function base64ToBytes(value){
+  const binary=atob(value),bytes=new Uint8Array(binary.length);
+  for(let i=0;i<binary.length;i++)bytes[i]=binary.charCodeAt(i);
+  return bytes;
+}
+async function encryptBackup(password){
+  const salt=crypto.getRandomValues(new Uint8Array(16));
+  const iv=crypto.getRandomValues(new Uint8Array(12));
+  const key=await deriveBackupKey(password,salt);
+  const plain=new TextEncoder().encode(JSON.stringify(backupPayload()));
+  const cipher=new Uint8Array(await crypto.subtle.encrypt({name:'AES-GCM',iv},key,plain));
+  const envelope={format:'MA-ENCRYPTED-BACKUP',version:1,kdf:'PBKDF2-SHA256',iterations:310000,cipher:'AES-256-GCM',salt:bytesToBase64(salt),iv:bytesToBase64(iv),data:bytesToBase64(cipher)};
+  return new Blob([JSON.stringify(envelope)],{type:'application/octet-stream'});
+}
+async function decryptBackup(blob,password){
+  const env=JSON.parse(await blob.text());
+  if(env.format!=='MA-ENCRYPTED-BACKUP'||env.version!==1||env.kdf!=='PBKDF2-SHA256'||env.cipher!=='AES-256-GCM')throw new Error('This is not a supported Mobile Accounting encrypted backup.');
+  const key=await deriveBackupKey(password,base64ToBytes(env.salt));
+  const plain=await crypto.subtle.decrypt({name:'AES-GCM',iv:base64ToBytes(env.iv)},key,base64ToBytes(env.data));
+  const data=JSON.parse(new TextDecoder().decode(plain));
+  if(data.format!=='MobileAccountingFullBackup'||data.schemaVersion!==1||!Array.isArray(data.accounts)||!Array.isArray(data.journals)||!Array.isArray(data.currencies)||!Array.isArray(data.budgets))throw new Error('Backup content validation failed.');
+  return data;
+}
+function getDriveConfig(){
+  const id=$('driveClientId').value.trim();
+  const pass=$('backupPass').value;
+  if(!id||!id.endsWith('.apps.googleusercontent.com'))throw new Error('Enter a valid Google OAuth Web Client ID.');
+  if(pass.length<12)throw new Error('Use a backup encryption password of at least 12 characters.');
+  localStorage.setItem('driveOAuthClientId',id);
+  driveBackupPassword=pass;
+  return {id,pass};
+}
+async function connectGoogleDrive(purpose='normal'){
+  try{
+    driveConnectPurpose=purpose;
+    const cfg=getDriveConfig();
+    await loadGoogleIdentity();
+    driveTokenClient=google.accounts.oauth2.initTokenClient({
+      client_id:cfg.id,
+      scope:'https://www.googleapis.com/auth/drive.file',
+      callback:async response=>{
+        if(response.error||!response.access_token){driveStatus('Google Drive connection was not completed: '+(response.error_description||response.error||'No access token'));return;}
+        driveToken=response.access_token;
+        driveTokenExpiresAt=Date.now()+(Number(response.expires_in||3600)*1000)-60000;
+        if(driveConnectPurpose==='restore'){
+          driveStatus('Google Drive connected. Select Restore from Drive to load the saved backup.',true);
+          return;
+        }
+        try{
+          const found=await findDriveBackup();
+          if(found){driveFileId=found.id;driveStatus('Google Drive connected. An existing backup was found. Choose Restore from Drive to recover it, or Backup Now to replace it with this device’s data.',true);}
+          else{driveStatus('Google Drive connected. Creating the first encrypted full backup…',true);await runDriveBackup();}
+        }catch(e){driveStatus('Connected, but could not check or create the backup: '+e.message);}
+      }
+    });
+    driveTokenClient.requestAccessToken({prompt:'consent'});
+  }catch(e){driveStatus(e.message);}
+}
+function disconnectGoogleDrive(){
+  driveToken=null;driveTokenExpiresAt=0;driveTokenClient=null;driveBackupPassword='';
+  driveStatus('Disconnected. Local saving remains active.');
+}
+async function driveFetch(url,options={}){
+  if(!driveToken||Date.now()>=driveTokenExpiresAt)throw new Error('Google access expired. Reconnect Google Drive to resume backups.');
+  const headers=new Headers(options.headers||{});
+  headers.set('Authorization','Bearer '+driveToken);
+  const response=await fetch(url,{...options,headers});
+  if(!response.ok){let detail='';try{detail=(await response.json()).error?.message||'';}catch(_){}throw new Error('Google Drive returned '+response.status+(detail?': '+detail:''));}
+  return response;
+}
+async function findDriveBackup(){
+  const q=encodeURIComponent("name='MobileAccounting_FullBackup.enc' and trashed=false");
+  const response=await driveFetch('https://www.googleapis.com/drive/v3/files?q='+q+'&spaces=drive&orderBy=modifiedTime desc&pageSize=10&fields=files(id,name,modifiedTime)');
+  const result=await response.json();
+  return result.files?.[0]||null;
+}
+async function uploadDriveBlob(blob){
+  const existing=await findDriveBackup();
+  const metadata={name:'MobileAccounting_FullBackup.enc',mimeType:'application/octet-stream',description:'Encrypted full backup from Mobile Accounting'};
+  const boundary='ma_backup_'+crypto.randomUUID().replaceAll('-','');
+  const body=new Blob([
+    '--'+boundary+'\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n',
+    JSON.stringify(metadata),'\r\n--'+boundary+'\r\nContent-Type: application/octet-stream\r\n\r\n',
+    blob,'\r\n--'+boundary+'--'
+  ]);
+  const url=existing
+    ?'https://www.googleapis.com/upload/drive/v3/files/'+encodeURIComponent(existing.id)+'?uploadType=multipart'
+    :'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart';
+  const response=await driveFetch(url,{
+    method:existing?'PATCH':'POST',
+    headers:{'Content-Type':'multipart/related; boundary='+boundary},
+    body
+  });
+  const result=await response.json();
+  driveFileId=result.id||existing?.id||'';
+  return result;
+}
+async function runDriveBackup(){
+  if(driveBackupBusy){driveBackupQueued=true;return;}
+  if(!driveToken||Date.now()>=driveTokenExpiresAt){driveStatus('Local data saved. Reconnect Google Drive to upload the latest encrypted backup.');return;}
+  if(!driveBackupPassword){driveStatus('Local data saved. Enter the backup password and reconnect to Google Drive.');return;}
+  driveBackupBusy=true;
+  try{
+    const blob=await encryptBackup(driveBackupPassword);
+    await uploadDriveBlob(blob);
+    const stamp=new Date().toLocaleString();
+    localStorage.setItem('driveLastBackupAt',stamp);
+    const last=$('driveLastBackup');if(last)last.textContent='Last successful Drive backup: '+stamp;
+    driveStatus('Encrypted backup successfully saved to Google Drive. After-entry backup is active while connected.',true);
+  }finally{
+    driveBackupBusy=false;
+    if(driveBackupQueued){driveBackupQueued=false;runDriveBackup().catch(e=>driveStatus('Backup failed: '+e.message));}
+  }
+}
+let driveBackupTimer=null;
+function queueDriveBackup(){
+  if(!driveToken||!driveBackupPassword)return;
+  clearTimeout(driveBackupTimer);
+  driveBackupTimer=setTimeout(()=>runDriveBackup().catch(e=>driveStatus('Local data saved, but Drive backup failed: '+e.message)),1200);
+}
+async function backupToDriveNow(){
+  try{
+    if(!driveToken||Date.now()>=driveTokenExpiresAt){await connectGoogleDrive('normal');return;}
+    if(!$('backupPass').value||$('backupPass').value.length<12)throw new Error('Enter your backup encryption password (12+ characters).');
+    driveBackupPassword=$('backupPass').value;
+    driveStatus('Uploading encrypted full backup…');
+    await runDriveBackup();
+  }catch(e){driveStatus(e.message);}
+}
+async function restoreFromDrive(){
+  try{
+    const cfg=getDriveConfig();
+    if(!driveToken||Date.now()>=driveTokenExpiresAt){await connectGoogleDrive('restore');alert('Connect Google Drive, then select Restore from Drive again. Your existing Drive backup will not be overwritten during connection.');return;}
+    driveStatus('Searching for your encrypted backup…');
+    const file=await findDriveBackup();
+    if(!file)throw new Error('No Mobile Accounting backup was found in the connected Google Drive account.');
+    if(!confirm('Restore the latest Google Drive backup? This will replace the accounting data currently saved on this device.'))return;
+    const response=await driveFetch('https://www.googleapis.com/drive/v3/files/'+encodeURIComponent(file.id)+'?alt=media');
+    const data=await decryptBackup(await response.blob(),cfg.pass);
+    accounts=data.accounts;currencies=data.currencies;journals=data.journals;budgets=data.budgets;
+    persist();
+    driveStatus('Restore completed. Your accounting data has been loaded on this device.',true);
+    alert('Restore completed. The app will reload your accounting records.');
+    location.reload();
+  }catch(e){driveStatus('Restore failed: '+e.message);}
+}
+function initBackupPanel(){
+  const id=localStorage.getItem('driveOAuthClientId')||'';
+  if($('driveClientId'))$('driveClientId').value=id;
+  const last=localStorage.getItem('driveLastBackupAt');
+  if(last&&$('driveLastBackup'))$('driveLastBackup').textContent='Last successful Drive backup: '+last;
+}
+
 function initAuth(){let h=localStorage.getItem('appPasswordHash'),salt=localStorage.getItem('appPasswordSalt');if(!h||!salt){authMode='setup';$('loginMode').innerHTML='<p>Create a password for this app.</p>';$('loginPass2Label').style.display='block';$('loginPass2').style.display='block';$('authBtn').textContent='Create Password'}else{$('loginMode').innerHTML='<p>Enter your password to unlock.</p>'}}
 async function authSubmit(){let p=$('loginPass').value;if(!p)return alert('Enter a password.');if(authMode==='setup'){let p2=$('loginPass2').value;if(p.length<6)return alert('Use at least 6 characters.');if(p!==p2)return alert('Passwords do not match.');let salt=crypto.randomUUID();localStorage.setItem('appPasswordSalt',salt);localStorage.setItem('appPasswordHash',await digestPassword(p,salt));sessionStorage.setItem('appUnlocked','1');$('login').style.display='none'}else{let salt=localStorage.getItem('appPasswordSalt'),h=await digestPassword(p,salt);if(h!==localStorage.getItem('appPasswordHash'))return alert('Incorrect password.');sessionStorage.setItem('appUnlocked','1');$('login').style.display='none'}}
 function logout(){sessionStorage.removeItem('appUnlocked');$('loginPass').value='';$('loginPass2').value='';$('login').style.display='flex';initAuth()}
@@ -49,7 +271,13 @@ function filterLineAccounts(el){let line=el.closest('.line'),type=line.querySele
 async function loadFXFile(){try{let r=await fetch('FX_Rates.csv?'+Date.now(),{cache:'no-store'});if(!r.ok)throw new Error('FX_Rates.csv not found');let text=await r.text();let lines=text.trim().split(/\r?\n/);if(lines.length<2)throw new Error('FX file is empty');let headers=lines[0].split(',').map(x=>x.trim().toLowerCase()),ci=headers.indexOf('currency'),ri=headers.indexOf('ratetolkr'),di=headers.indexOf('date');if(ci<0||ri<0)throw new Error('Required columns: Currency,RateToLKR');let count=0;for(let i=1;i<lines.length;i++){let cols=lines[i].split(',').map(x=>x.trim()),code=(cols[ci]||'').toUpperCase(),rate=+(cols[ri]||0);if(!code||!rate)continue;let x=currencies.find(c=>c.code===code);if(x){x.rate=rate;x.source='FX file';x.rateDate=di>=0?cols[di]:''}else currencies.push({code,rate,source:'FX file',rateDate:di>=0?cols[di]:''});count++}persist();refresh();alert(count+' FX rates loaded from FX_Rates.csv.')}catch(e){alert('FX file could not be loaded. '+e.message)}}
 function currencyRate(code){let x=currencies.find(c=>c.code===code);return x?+x.rate||1:1}
 function setAutoRate(el){let code=el?el.value:$('curr')?.value,x=currencies.find(c=>c.code===code);return x?+x.rate||1:1}
-function persist(){localStorage.setItem('accounts',JSON.stringify(accounts));localStorage.setItem('currencies',JSON.stringify(currencies));localStorage.setItem('journals',JSON.stringify(journals));localStorage.setItem('budgets',JSON.stringify(budgets))}
+function persist(){
+  localStorage.setItem('accounts',JSON.stringify(accounts));
+  localStorage.setItem('currencies',JSON.stringify(currencies));
+  localStorage.setItem('journals',JSON.stringify(journals));
+  localStorage.setItem('budgets',JSON.stringify(budgets));
+  queueDriveBackup();
+}
 function typeOptionsForLine(){let t=[...new Set(accounts.map(a=>a.accountType).filter(Boolean))].sort();return '<option value="">All Types</option>'+t.map(x=>'<option>'+esc(x)+'</option>').join('')}
 function cOpts(){return currencies.map(c=>'<option>'+esc(c.code)+'</option>').join('')}
 function nextJV(d){let ym=d.slice(2,4)+d.slice(5,7),m=0;journals.forEach(j=>{if(j.jv.startsWith(ym))m=Math.max(m,+j.jv.slice(4)||0)});return ym+String(m+1).padStart(4,'0')}
@@ -293,5 +521,5 @@ function refresh(){
   let o='<option value="">Select account</option>'+accounts.map(a=>'<option value="'+esc(a.name)+'">'+esc(a.name)+'</option>').join('');
   $('lacct').innerHTML=o;$('ba').innerHTML=o;filterLedgerAccounts();renderHistory();renderJVReview();renderLedger();renderTB();renderIS();renderBS();renderBSValidation();renderCOA();renderCurrency();renderBudget();renderSubCodes();fillYears();renderDashboardCharts();}
 function exportCSV(){let rows=[['JV Number','Date','Description','Reference','Individual Account','Sub Code','Currency','Rate To LKR','Side','Amount','Amount']];journals.forEach(j=>j.lines.forEach(l=>{let x=lineForReport(j,l);rows.push([j.jv,j.date,j.description,j.reference,x.account,x.subcode,x.currency,x.rate,x.side,x.amount,x.lkr])}));let s=rows.map(r=>r.map(x=>'"'+String(x??'').replaceAll('"','""')+'"').join(',')).join('\n');let a=document.createElement('a');a.href=URL.createObjectURL(new Blob([s],{type:'text/csv'}));a.download='mobile_journal_export.csv';a.click()}
-initAuth();if(sessionStorage.getItem('appUnlocked')==='1')$('login').style.display='none';$('jdate').value=new Date().toISOString().slice(0,10);$('jdate').onchange=setJV;$('iy').value=currentYear();addLine();addLine();setJV();refresh();$('dy').onchange=renderDashboardCharts;$('dm').onchange=renderDashboardCharts;$('iy').onchange=renderIS;$('im').onchange=renderIS;if('serviceWorker' in navigator)navigator.serviceWorker.register('sw.js');
+initBackupPanel();initAuth();if(sessionStorage.getItem('appUnlocked')==='1')$('login').style.display='none';$('jdate').value=new Date().toISOString().slice(0,10);$('jdate').onchange=setJV;$('iy').value=currentYear();addLine();addLine();setJV();refresh();$('dy').onchange=renderDashboardCharts;$('dm').onchange=renderDashboardCharts;$('iy').onchange=renderIS;$('im').onchange=renderIS;if('serviceWorker' in navigator)navigator.serviceWorker.register('sw.js');
 </script></body></html>
