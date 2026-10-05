@@ -297,15 +297,35 @@ function incomeExpenseTotals(year,month){let inc=0,exp=0;journals.forEach(j=>{if
 function currentYear(){return new Date().getFullYear()}
 function years(){let y=new Set([currentYear()]);journals.forEach(j=>y.add(new Date(j.date).getFullYear()));return [...y].sort((a,b)=>b-a)}
 function fillYears(){let optsY=years().map(y=>'<option value="'+y+'">'+y+'</option>').join('');$('dy').innerHTML=optsY;$('iy').innerHTML=optsY;$('dy').value=currentYear();$('iy').value=currentYear()}
-function renderHistory(){$('hist').innerHTML=journals.slice().reverse().map(j=>`<div class="item"><b>${esc(j.jv)}</b><div class="muted">${esc(j.date)} · ${esc(j.description||'')} · ${j.lines.length} line(s)</div></div>`).join('')||'<p class="muted">No journals yet.</p>'}
+function renderHistory(){$('hist').innerHTML=journals.slice().reverse().map(j=>`<div class="item"><div class="rowhead"><div><b>${esc(j.jv)}</b><div class="muted">${esc(j.date)} · ${esc(j.description||'')} · ${j.lines.length} line(s)</div></div><button class="btn danger" onclick="deleteJV('${esc(String(j.jv))}')">Delete JV</button></div></div>`).join('')||'<p class="muted">No journals yet.</p>'}
 function renderJVReview(){
   let q=$('jvReviewSearch').value.trim().toLowerCase();
   if(!q){$('jvReviewResults').innerHTML='<p class="muted">Enter a JV number to review posted journal details.</p>';return}
   let matches=journals.filter(j=>String(j.jv||'').toLowerCase().includes(q));
   let rows=[];
   matches.forEach(j=>j.lines.forEach(l=>{let x=lineForReport(j,l);rows.push([j.jv,j.date,j.description,j.reference,x.account,x.subcode,x.currency,x.side,x.amount,x.lkr])}));
-  $('jvReviewResults').innerHTML=matches.length?`<div class="tablewrap"><table><thead><tr><th>JV Number</th><th>Date</th><th>Description</th><th>Reference</th><th>Account</th><th>Sub Code</th><th>Currency</th><th>Debit/Credit</th><th>Amount</th><th>Amount</th></tr></thead><tbody>${rows.map(r=>`<tr><td>${esc(r[0])}</td><td>${esc(r[1])}</td><td>${esc(r[2])}</td><td>${esc(r[3])}</td><td>${esc(r[4])}</td><td>${esc(r[5])}</td><td>${esc(r[6])}</td><td>${esc(r[7])}</td><td>${Number(r[8]).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}</td><td class="lkr">${Number(r[9]).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}</td></tr>`).join('')}</tbody></table></div>`:'<p class="muted">No matching posted JV found.</p>';
+  let unique=[...new Map(matches.map(j=>[String(j.jv),j])).values()];
+  $('jvReviewResults').innerHTML=matches.length?`
+    <div class="tablewrap"><table><thead><tr><th>JV Number</th><th>Date</th><th>Description</th><th>Reference</th><th>Account</th><th>Sub Code</th><th>Currency</th><th>Debit/Credit</th><th>Amount</th><th>LKR Amount</th></tr></thead>
+    <tbody>${rows.map(r=>`<tr><td>${esc(r[0])}</td><td>${esc(r[1])}</td><td>${esc(r[2])}</td><td>${esc(r[3])}</td><td>${esc(r[4])}</td><td>${esc(r[5])}</td><td>${esc(r[6])}</td><td>${esc(r[7])}</td><td>${Number(r[8]).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}</td><td class="lkr">${Number(r[9]).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}</td></tr>`).join('')}</tbody></table></div>
+    <div class="actions">${unique.map(j=>`<button class="btn danger" onclick="deleteJV('${esc(String(j.jv))}')">Delete JV ${esc(String(j.jv))}</button>`).join('')}</div>
+  `:'<p class="muted">No matching posted JV found.</p>';
 }
+
+function deleteJV(jv){
+  let idx=journals.findIndex(j=>String(j.jv)===String(jv));
+  if(idx<0){alert('JV '+jv+' was not found.');return}
+  let j=journals[idx];
+  let ok=confirm('Delete JV '+j.jv+'?\n\nDate: '+(j.date||'')+'\nDescription: '+(j.description||'')+'\nLines: '+j.lines.length+'\n\nThis will permanently remove this posted JV from this device. Please make sure you have a backup first.');
+  if(!ok)return;
+  journals.splice(idx,1);
+  persist();
+  refresh();
+  let search=$('jvReviewSearch');
+  if(search&&search.value)renderJVReview();
+  alert('JV '+j.jv+' has been deleted.');
+}
+
 function clearJVReview(){$('jvReviewSearch').value='';renderJVReview()}
 function filterLedgerAccounts(){
   let type=$('ltype').value,previous=$('lacct').value;
@@ -324,9 +344,8 @@ function renderLedger(){
   }));
   entries.sort((p,q)=>String(p.j.date).localeCompare(String(q.j.date))||String(p.j.jv).localeCompare(String(q.j.jv)));
   entries.forEach(({j,x})=>{
-    let signedFC=x.side==='DB'?x.amount:-x.amount;
-    if(x.currency&&x.currency!=='LKR')fcBalances[x.currency]=(fcBalances[x.currency]||0)+signedFC;
     b+=x.debitLKR-x.creditLKR;
+    if(x.currency&&x.currency!=='LKR')fcBalances[x.currency]=(fcBalances[x.currency]||0)+(x.side==='DB'?x.amount:-x.amount);
     rows.push([j.date,j.jv,j.description,x.currency,x.amount,x.debitLKR,x.creditLKR,b]);
   });
   $('ledgerBody').innerHTML=rows.map(r=>`<tr><td>${r[0]}</td><td>${r[1]}</td><td>${esc(r[2])}</td><td>${r[3]}</td><td>${r[4].toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}</td><td class="lkr">${r[5].toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}</td><td class="lkr">${r[6].toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}</td><td class="lkr">${r[7].toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}</td></tr>`).join('')||'<tr><td colspan="8">No transactions for the selected filters.</td></tr>';
@@ -334,11 +353,11 @@ function renderLedger(){
   let fcLines=Object.keys(fcBalances).sort().map(code=>`<div>${esc(code)} – <b>${fmt(fcBalances[code])}</b></div>`);
   if(!fcLines.length){
     let inferred=currencies.map(c=>c.code).filter(code=>code!=='LKR').find(code=>new RegExp('(?:^|\\s)'+code+'$','i').test(a));
-    fcLines=[`<div>FC amount – <b>${inferred?fmt(0):'0.00'}</b></div>`];
-    if(inferred)fcLines=[`<div>${esc(inferred)} – <b>${fmt(0)}</b></div>`];
+    fcLines=[`<div>${inferred?esc(inferred):'FC amount'} – <b>${fmt(0)}</b></div>`];
   }
   $('ledgerBalanceSummary').innerHTML=`<div>LKR – <b>${fmt(b)}</b></div>${fcLines.join('')}`;
 }
+
 function groupByType(){let m={};journals.forEach(j=>j.lines.forEach(l=>{let x=lineForReport(j,l),a=accounts.find(a=>a.name===x.account)||{};let t=reportAccountType(a);m[t]??={d:0,c:0,accounts:{}};m[t].d+=x.debitLKR;m[t].c+=x.creditLKR;m[t].accounts[x.account]??={d:0,c:0};m[t].accounts[x.account].d+=x.debitLKR;m[t].accounts[x.account].c+=x.creditLKR}));return m}
 function renderTB(){let m=groupByType(),html='';Object.entries(m).sort().forEach(([t,v])=>{html+=`<tr class="grouprow"><td>${esc(t)}</td><td>${v.d.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}</td><td>${v.c.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}</td><td>${(v.d-v.c).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}</td></tr>`;Object.entries(v.accounts).sort().forEach(([a,x])=>html+=`<tr class="subrow"><td>↳ ${esc(a)}</td><td>${x.d.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}</td><td>${x.c.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}</td><td>${(x.d-x.c).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}</td></tr>`)});$('tbBody').innerHTML=html||'<tr><td colspan="4">No transactions.</td></tr>'}
 function nature(a){return ((a.nature||'')+' '+(a.accountType||'')+' '+(a.subAccount||'')).toLowerCase()}
@@ -350,6 +369,24 @@ function reportAccountType(a){
 }
 function reportGroups(kind,year,month){let m={};journals.forEach(j=>{if(!periodMatch(j.date,year,month))return;j.lines.forEach(l=>{let x=lineForReport(j,l),a=accounts.find(a=>a.name===x.account)||{},n=nature(a);let investment=isInvestmentAccount(a);let ok=kind==='pl'?(n.includes('income')||n.includes('expense')):(investment||n.includes('asset')||n.includes('liabil')||n.includes('equity'));if(!ok)return;let t=reportAccountType(a);m[t]??={d:0,c:0,accounts:{}};m[t].d+=x.debitLKR;m[t].c+=x.creditLKR;m[t].accounts[x.account]??={d:0,c:0};m[t].accounts[x.account].d+=x.debitLKR;m[t].accounts[x.account].c+=x.creditLKR})});return m}
 function renderIS(){let y=+$('iy').value||currentYear(),mo=$('im').value?+$('im').value:null,m=reportGroups('pl',y,mo),html='';Object.entries(m).sort().forEach(([t,v])=>{html+=`<tr class="grouprow"><td>${esc(t)}</td><td>${v.d.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}</td><td>${v.c.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}</td><td>${(v.c-v.d).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}</td></tr>`;Object.entries(v.accounts).sort().forEach(([a,x])=>html+=`<tr class="subrow"><td>↳ ${esc(a)}</td><td>${x.d.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}</td><td>${x.c.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}</td><td>${(x.c-x.d).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}</td></tr>`)});$('isBody').innerHTML=html||'<tr><td colspan="4">No income/expense entries for the selected period.</td></tr>';let totals=incomeExpenseTotals(y,mo),net=totals.inc-totals.exp;$('isNetRevenue').textContent=net.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}
+
+function renderBS(){let m=reportGroups('bs',currentYear(),null),html='';Object.entries(m).sort().forEach(([t,v])=>{html+=`<tr class="grouprow"><td>${esc(t)}</td><td>${v.d.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}</td><td>${v.c.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}</td><td>${(v.d-v.c).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}</td></tr>`;Object.entries(v.accounts).sort().forEach(([a,x])=>html+=`<tr class="subrow"><td>↳ ${esc(a)}</td><td>${x.d.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}</td><td>${x.c.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}</td><td>${(x.d-x.c).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}</td></tr>`)});$('bsBody').innerHTML=html||'<tr><td colspan="4">No balance-sheet entries for mapped accounts.</td></tr>'}
+function balanceSheetValidation(){
+  let assets=0,investments=0,liabilities=0,equity=0,income=0,expenses=0,y=currentYear();
+  journals.forEach(j=>{
+    if(!periodMatch(j.date,y,null))return;
+    j.lines.forEach(l=>{
+      let x=lineForReport(j,l),a=accounts.find(a=>a.name===x.account)||{},n=nature(a),bal=x.debitLKR-x.creditLKR;
+      if(isInvestmentAccount(a)) investments+=bal;
+      else if(n.includes('asset')) assets+=bal;
+      else if(n.includes('liabil')) liabilities+=-bal;
+      else if(n.includes('equity')) equity+=-bal;
+      else if(n.includes('income')) income+=-bal;
+      else if(n.includes('expense')) expenses+=bal;
+    });
+  });
+  return (assets+investments)-(liabilities+equity+(income-expenses));
+}
 function renderBSValidation(){
   let diff=balanceSheetValidation(),display=Math.abs(diff)<0.005?0:diff;
   $('bsValidationValue').textContent=display.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
